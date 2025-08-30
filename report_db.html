@@ -68,78 +68,27 @@
     function isJpx(sym){ return /\.T$/i.test(String(sym||'')); }
     function parseNum(v){ var n = Number(v); return Number.isFinite(n) ? n : NaN; }
 
-    async function fetchHoldings(){
+    async function fetchPortfolio(){
       var base = getWorkerBase(); if (!base) throw new Error('API未指定: ?api=...');
-      var r = await fetch(base + '/api/portfolio', { cache: 'no-store' });
+      var r = await fetch(base + '/api/portfolio_with_prices', { cache: 'no-store' });
       if (!r.ok) throw new Error('HTTP '+r.status);
       var rows = await r.json();
-      if (!Array.isArray(rows)) throw new Error('invalid holdings');
-      return rows;
-    }
-    async function fetchQuotes(){
-      var base = getWorkerBase(); if (!base) throw new Error('API未指定: ?api=...');
-      var r = await fetch(base + '/api/quotes', { cache: 'no-store' });
-      if (!r.ok) throw new Error('HTTP '+r.status);
-      var rows = await r.json();
-      if (!Array.isArray(rows)) throw new Error('invalid quotes');
+      if (!Array.isArray(rows)) throw new Error('invalid portfolio');
       return rows;
     }
 
-    function computeFx(quotesMap){
-      var fx = NaN;
-      var q = quotesMap['USDJPY=X'];
-      if (q && Number.isFinite(q.price)) fx = Number(q.price);
-      if (Number.isFinite(fx) && fx > 0 && fx < 1) fx = 1 / fx; // invert if needed
-      return Number.isFinite(fx) && fx > 0 ? fx : NaN;
-    }
-
-    function buildMaps(holdings, quotes){
-      var hmap = {};
-      holdings.forEach(function(h){ if (h && h.symbol) { hmap[String(h.symbol).toUpperCase()] = h; } });
-      var qmap = {};
-      quotes.forEach(function(q){ if (q && q.symbol) { qmap[String(q.symbol).toUpperCase()] = q; } });
-      return { hmap: hmap, qmap: qmap };
-    }
-
-    function computeRow(sym, h, q, fx){
-      var shares = parseNum(h && h.shares);
-      var cur = String((h && h.currency) || (q && q.currency) || '').toUpperCase();
-      var price = parseNum(q && q.price); // in native currency
-      var jpyNow = parseNum(q && q.jpy);
-      var usdP = NaN, jpyP = NaN;
-      if (cur === 'USD'){
-        if (Number.isFinite(price)) usdP = price;
-        if (Number.isFinite(jpyNow)) jpyP = jpyNow; else if (Number.isFinite(usdP) && Number.isFinite(fx)) jpyP = usdP * fx;
-      } else { // treat as JPY
-        if (Number.isFinite(jpyNow)) jpyP = jpyNow; else if (Number.isFinite(price)) jpyP = price;
-        if (!Number.isFinite(usdP) && Number.isFinite(jpyP) && Number.isFinite(fx)) usdP = jpyP / fx;
-      }
-      // Baselines
-      var p1d = parseNum(q && q.price_1d);
-      var p1m = parseNum(q && q.price_1m);
-      var p1y = parseNum(q && q.price_1y);
-      var j1d = parseNum(q && q.jpy_1d);
-      var j1m = parseNum(q && q.jpy_1m);
-      var j1y = parseNum(q && q.jpy_1y);
-      var usd1d = null, usd1m = null, usd1y = null;
-      var jpy1d = null, jpy1m = null, jpy1y = null;
-      // USD percent: prefer USD baselines; otherwise derive from JPY baselines using current fx (approx)
-      if (cur === 'USD'){
-        if (Number.isFinite(p1d) && Number.isFinite(usdP)) usd1d = pct(p1d, usdP);
-        if (Number.isFinite(p1m) && Number.isFinite(usdP)) usd1m = pct(p1m, usdP);
-        if (Number.isFinite(p1y) && Number.isFinite(usdP)) usd1y = pct(p1y, usdP);
-      } else if (Number.isFinite(fx)){
-        if (Number.isFinite(j1d) && Number.isFinite(usdP)) usd1d = pct(j1d / fx, usdP);
-        if (Number.isFinite(j1m) && Number.isFinite(usdP)) usd1m = pct(j1m / fx, usdP);
-        if (Number.isFinite(j1y) && Number.isFinite(usdP)) usd1y = pct(j1y / fx, usdP);
-      }
-      // JPY percent baselines
-      if (Number.isFinite(j1d) && Number.isFinite(jpyP)) jpy1d = pct(j1d, jpyP);
-      if (Number.isFinite(j1m) && Number.isFinite(jpyP)) jpy1m = pct(j1m, jpyP);
-      if (Number.isFinite(j1y) && Number.isFinite(jpyP)) jpy1y = pct(j1y, jpyP);
-
+    function computeRow(rec){
+      var shares = parseNum(rec && rec.shares);
+      var usdP = parseNum(rec && (rec.usd != null ? rec.usd : rec.price));
+      var jpyP = parseNum(rec && (rec.jpy != null ? rec.jpy : rec.price));
+      var usd1d = pct(parseNum(rec && rec.usd_1d), usdP);
+      var usd1m = pct(parseNum(rec && rec.usd_1m), usdP);
+      var usd1y = pct(parseNum(rec && rec.usd_1y), usdP);
+      var jpy1d = pct(parseNum(rec && rec.jpy_1d), jpyP);
+      var jpy1m = pct(parseNum(rec && rec.jpy_1m), jpyP);
+      var jpy1y = pct(parseNum(rec && rec.jpy_1y), jpyP);
       return {
-        symbol: sym,
+        symbol: rec.symbol,
         shares: shares,
         usdPrice: usdP,
         usd1d: usd1d,
@@ -269,19 +218,12 @@
     async function refresh(){
       var btn = document.getElementById('pf-refresh'); if(btn){ btn.disabled=true; btn.textContent='更新中…'; }
       try{
-        var holdings = await fetchHoldings();
-        var quotes = await fetchQuotes();
-        // Build maps and fx
-        var maps = buildMaps(holdings, quotes);
-        var qmap = maps.qmap, hmap = maps.hmap;
-        var fx = computeFx(qmap);
-        // Build computed rows for JP and US
-        var syms = Object.keys(hmap).filter(function(s){ return s !== 'USDJPY=X'; }).sort();
+        var data = await fetchPortfolio();
         var jpRows = [], usRows = [];
-        syms.forEach(function(s){
-          var h = hmap[s]; var q = qmap[s] || null;
-          var r = computeRow(s, h, q, fx);
-          if (isJpx(s)) jpRows.push(r); else usRows.push(r);
+        data.forEach(function(row){
+          if (!row || !row.symbol) return;
+          var r = computeRow(row);
+          if (isJpx(row.symbol)) jpRows.push(r); else usRows.push(r);
         });
         // Render tables
         var jpTbody = document.querySelector('#pf-jp tbody');
