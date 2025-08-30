@@ -9,7 +9,7 @@
  - 設定JSON: 価格取得の設定（デフォルトは yfinance）
 
 使用例:
-  python3 portfolio_notify.py --config config.json --portfolio-url https://example.workers.dev/api/portfolio --save-html report.html
+  python3 portfolio_notify.py --config config.json --portfolio-url https://example.workers.dev/api/portfolio --save-html report_db.html
 
 備考:
  - 価格取得は yfinance（APIキー不要）または Alpha Vantage（APIキー必要）を選択可能。
